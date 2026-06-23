@@ -1,0 +1,10 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+data/*.jsonl
+tests/_notes_test.jsonl
+tests/_tasks_test.jsonl
