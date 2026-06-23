@@ -190,6 +190,63 @@ class Database:
             (user_id, limit),
         )
 
+    def get_task(self, user_id: int, task_id: int) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            SELECT *
+            FROM items
+            WHERE id = ? AND user_id = ? AND type = 'task'
+            """,
+            (task_id, user_id),
+        )
+
+    def complete_task(self, user_id: int, task_id: int) -> bool:
+        return self._update_task(
+            user_id,
+            task_id,
+            "status = 'done'",
+            (),
+        )
+
+    def rename_task(self, user_id: int, task_id: int, title: str) -> bool:
+        normalized = " ".join(title.split())
+        if not normalized:
+            return False
+        return self._update_task(
+            user_id,
+            task_id,
+            "title = ?",
+            (normalized,),
+        )
+
+    def reschedule_task(
+        self,
+        user_id: int,
+        task_id: int,
+        due_type: str,
+        due_date: str | None,
+    ) -> bool:
+        if due_type not in {"today", "tomorrow", "this_week", "no_deadline"}:
+            return False
+        return self._update_task(
+            user_id,
+            task_id,
+            "due_type = ?, due_date = ?",
+            (due_type, due_date),
+        )
+
+    def delete_task(self, user_id: int, task_id: int) -> bool:
+        with closing(self._connect()) as connection:
+            with connection:
+                cursor = connection.execute(
+                    """
+                    DELETE FROM items
+                    WHERE id = ? AND user_id = ? AND type = 'task'
+                    """,
+                    (task_id, user_id),
+                )
+                return cursor.rowcount == 1
+
     def get_last_note(self, user_id: int) -> dict[str, Any] | None:
         return self._fetch_one(
             """
@@ -248,6 +305,25 @@ class Database:
         with closing(self._connect()) as connection:
             row = connection.execute(query, params).fetchone()
             return dict(row) if row else None
+
+    def _update_task(
+        self,
+        user_id: int,
+        task_id: int,
+        assignments: str,
+        values: tuple[Any, ...],
+    ) -> bool:
+        with closing(self._connect()) as connection:
+            with connection:
+                cursor = connection.execute(
+                    f"""
+                    UPDATE items
+                    SET {assignments}
+                    WHERE id = ? AND user_id = ? AND type = 'task'
+                    """,
+                    (*values, task_id, user_id),
+                )
+                return cursor.rowcount == 1
 
 
 def _utc_iso(value: datetime | None) -> str:

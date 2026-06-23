@@ -10,7 +10,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Message
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, Message
 
 from app.config import Settings
 from app.db import Database
@@ -21,13 +23,20 @@ from app.keyboards import (
     TODAY_BUTTON,
     UNDO_BUTTON,
     WORKOUT_BUTTON,
+    delete_confirmation_keyboard,
     main_keyboard,
+    reschedule_keyboard,
+    tasks_keyboard,
 )
 from app.llm_parser import LLMParserError, OpenRouterParser
 
 
 LOGGER = logging.getLogger(__name__)
 MAX_MESSAGE_LENGTH = 3900
+
+
+class TaskEdit(StatesGroup):
+    waiting_for_title = State()
 
 
 def create_router(
@@ -54,6 +63,11 @@ def create_router(
     @router.message(Command("tasks"))
     async def tasks_handler(message: Message) -> None:
         await show_tasks(message, database)
+
+    @router.message(Command("cancel"))
+    async def cancel_handler(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await message.answer("Редактирование отменено.")
 
     @router.message(Command("food"))
     async def food_handler(message: Message) -> None:
@@ -96,6 +110,43 @@ def create_router(
         LAST_BUTTON: last_handler,
         UNDO_BUTTON: undo_handler,
     }
+
+    @router.callback_query(F.data.startswith("task:"))
+    async def task_callback_handler(
+        query: CallbackQuery,
+        state: FSMContext,
+    ) -> None:
+        await handle_task_callback(query, state, database, settings)
+
+    @router.message(TaskEdit.waiting_for_title, F.text)
+    async def task_title_handler(message: Message, state: FSMContext) -> None:
+        user_id = _user_id(message)
+        if user_id is None:
+            return
+
+        title = " ".join((message.text or "").split())
+        if not title:
+            await message.answer("Название не может быть пустым.")
+            return
+        if len(title) > 300:
+            await message.answer("Название слишком длинное. Максимум 300 символов.")
+            return
+
+        state_data = await state.get_data()
+        task_id = state_data.get("task_id")
+        updated = await asyncio.to_thread(
+            database.rename_task,
+            user_id,
+            task_id,
+            title,
+        )
+        await state.clear()
+        if not updated:
+            await message.answer("Задача не найдена.")
+            return
+
+        await message.answer(f"Изменил задачу: {html.escape(title)}")
+        await show_tasks(message, database)
 
     @router.message(F.text)
     async def text_note_handler(message: Message) -> None:
@@ -183,7 +234,117 @@ async def show_tasks(message: Message, database: Database) -> None:
         lines.append(
             f"{index}. {html.escape(task['title'])} — {_format_due(task)}"
         )
-    await message.answer(limit_message("\n".join(lines)))
+    await message.answer(
+        limit_message("\n".join(lines)),
+        reply_markup=tasks_keyboard(tasks),
+    )
+
+
+async def handle_task_callback(
+    query: CallbackQuery,
+    state: FSMContext,
+    database: Database,
+    settings: Settings,
+) -> None:
+    user_id = query.from_user.id
+    data = query.data or ""
+    parts = data.split(":")
+    if len(parts) < 3:
+        await query.answer("Некорректная кнопка.", show_alert=True)
+        return
+
+    action = parts[1]
+    try:
+        task_id = int(parts[2])
+    except ValueError:
+        await query.answer("Некорректная задача.", show_alert=True)
+        return
+
+    if action == "cancel":
+        await state.clear()
+        await query.answer("Отменено")
+        await refresh_tasks_message(query, database)
+        return
+
+    task = await asyncio.to_thread(database.get_task, user_id, task_id)
+    if task is None:
+        await query.answer("Задача не найдена.", show_alert=True)
+        await refresh_tasks_message(query, database)
+        return
+
+    if action == "done":
+        await asyncio.to_thread(database.complete_task, user_id, task_id)
+        await query.answer("Задача выполнена")
+        await refresh_tasks_message(query, database)
+        return
+
+    if action == "edit":
+        await state.set_state(TaskEdit.waiting_for_title)
+        await state.update_data(task_id=task_id)
+        await query.answer()
+        if query.message:
+            await query.message.answer(
+                "Отправь новое название задачи одним сообщением.\n"
+                "Для отмены: /cancel"
+            )
+        return
+
+    if action == "move":
+        await query.answer()
+        if query.message:
+            await query.message.edit_text(
+                f"Куда перенести задачу «{html.escape(task['title'])}»?",
+                reply_markup=reschedule_keyboard(task_id),
+            )
+        return
+
+    if action == "due" and len(parts) == 4:
+        due_type = parts[3]
+        due_date = due_date_for_type(due_type, settings.user_timezone)
+        updated = await asyncio.to_thread(
+            database.reschedule_task,
+            user_id,
+            task_id,
+            due_type,
+            due_date,
+        )
+        await query.answer("Срок изменён" if updated else "Некорректный срок")
+        await refresh_tasks_message(query, database)
+        return
+
+    if action == "delete":
+        await query.answer()
+        if query.message:
+            await query.message.edit_text(
+                f"Удалить задачу «{html.escape(task['title'])}»?",
+                reply_markup=delete_confirmation_keyboard(task_id),
+            )
+        return
+
+    if action == "delete_yes":
+        await asyncio.to_thread(database.delete_task, user_id, task_id)
+        await query.answer("Задача удалена")
+        await refresh_tasks_message(query, database)
+        return
+
+    await query.answer("Неизвестное действие.", show_alert=True)
+
+
+async def refresh_tasks_message(query: CallbackQuery, database: Database) -> None:
+    if query.message is None:
+        return
+    tasks = await asyncio.to_thread(database.get_active_tasks, query.from_user.id)
+    if not tasks:
+        await query.message.edit_text("Активных задач нет.")
+        return
+
+    lines = ["Активные задачи:"]
+    for index, task in enumerate(tasks, start=1):
+        lines.append(f"{index}. {html.escape(task['title'])} — {_format_due(task)}")
+    await query.message.edit_text(
+        limit_message("\n".join(lines)),
+        reply_markup=tasks_keyboard(tasks),
+    )
 
 
 async def show_items_for_today(
@@ -269,6 +430,22 @@ def local_day_bounds(timezone_name: str) -> tuple[str, str, str]:
         start.astimezone(timezone.utc).isoformat(timespec="seconds"),
         end.astimezone(timezone.utc).isoformat(timespec="seconds"),
     )
+
+
+def due_date_for_type(due_type: str, timezone_name: str) -> str | None:
+    if due_type not in {"today", "tomorrow", "this_week", "no_deadline"}:
+        return None
+    try:
+        tzinfo = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise RuntimeError(f"Unknown timezone: {timezone_name}") from exc
+
+    today = datetime.now(tzinfo).date()
+    if due_type == "today":
+        return today.isoformat()
+    if due_type == "tomorrow":
+        return (today + timedelta(days=1)).isoformat()
+    return None
 
 
 def _user_id(message: Message) -> int | None:
