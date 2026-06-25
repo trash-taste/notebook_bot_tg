@@ -8,3 +8,4 @@ __pycache__/
 data/*.jsonl
 tests/_notes_test.jsonl
 tests/_tasks_test.jsonl
+notes_bot/obsidian_vault/

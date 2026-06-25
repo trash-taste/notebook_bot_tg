@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "openai/gpt-4o-mini"
     db_path: Path = Path("/app/data/notes.db")
+    obsidian_vault_path: Path | None = None
     user_timezone: str = "Asia/Almaty"
     log_level: str = "INFO"
 
@@ -35,6 +36,15 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_base_url(cls, value: str) -> str:
         return value.strip().rstrip("/")
+
+    @field_validator("obsidian_vault_path", mode="before")
+    @classmethod
+    def normalize_optional_path(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("log_level")
     @classmethod

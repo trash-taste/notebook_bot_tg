@@ -29,6 +29,7 @@ from app.keyboards import (
     tasks_keyboard,
 )
 from app.llm_parser import LLMParserError, OpenRouterParser
+from app.obsidian import ObsidianExporter
 
 
 LOGGER = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ def create_router(
     settings: Settings,
 ) -> Router:
     router = Router(name="notes")
+    obsidian_exporter = ObsidianExporter(settings.obsidian_vault_path)
 
     @router.message(CommandStart())
     async def start_handler(message: Message) -> None:
@@ -169,16 +171,32 @@ def create_router(
 
         try:
             parsed_note = await parser.parse(text)
-            await asyncio.to_thread(
+            note_id = await asyncio.to_thread(
                 database.save_note,
                 message.from_user.id,
                 text,
                 parsed_note,
             )
+            await asyncio.to_thread(
+                obsidian_exporter.export_note,
+                user_id=message.from_user.id,
+                note_id=note_id,
+                raw_text=text,
+                parsed_note=parsed_note,
+            )
         except LLMParserError:
             LOGGER.exception("LLM parsing failed for user_id=%s", message.from_user.id)
             await message.answer(
                 "Не получилось разобрать заметку. Попробуй ещё раз немного позже."
+            )
+            return
+        except OSError:
+            LOGGER.exception(
+                "Obsidian export failed for user_id=%s",
+                message.from_user.id,
+            )
+            await message.answer(
+                "Заметку сохранил, но не получилось записать Markdown в Obsidian."
             )
             return
         except Exception:

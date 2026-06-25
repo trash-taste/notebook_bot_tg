@@ -88,6 +88,20 @@ LOG_LEVEL=INFO
 
 Для локального запуска без Docker замени `DB_PATH` на `./data/notes.db`.
 
+### Экспорт в Obsidian
+
+По умолчанию экспорт выключен. Чтобы бот дополнительно сохранял каждую запись как Markdown-файл для Obsidian, добавь в `.env`:
+
+```env
+OBSIDIAN_VAULT_PATH=/app/obsidian
+HOST_OBSIDIAN_VAULT_PATH=/opt/obsidian_vault
+```
+
+`OBSIDIAN_VAULT_PATH` — путь внутри контейнера.
+`HOST_OBSIDIAN_VAULT_PATH` — папка на VPS, где будут лежать Markdown-файлы.
+
+После запуска Obsidian можно открыть эту папку как vault или синхронизировать её с твоим основным vault через Git/Syncthing/Obsidian Sync.
+
 ## 3. Запуск через Docker Compose
 
 Собери и запусти контейнер:
@@ -171,7 +185,7 @@ ls -lh backups/
 Перейди в каталог проекта и получи новую версию:
 
 ```bash
-cd /opt/notes_bot
+cd /opt/notebook_bot_tg/notes_bot
 git pull
 ```
 

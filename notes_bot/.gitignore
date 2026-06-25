@@ -8,4 +8,4 @@ data/*.db
 data/*.db-*
 logs/*.log
 backups/
-
+obsidian_vault/
