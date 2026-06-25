@@ -102,3 +102,47 @@ def delete_confirmation_keyboard(task_id: int) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def clarification_keyboard(
+    candidates: list[dict],
+    *,
+    include_create_new: bool = True,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    labels = {
+        "food_log": "🍽",
+        "workout_log": "🏋️",
+        "task": "✅",
+        "general_note": "📝",
+    }
+    for item in candidates[:6]:
+        item_id = item["id"]
+        icon = labels.get(item.get("type"), "📝")
+        title = str(item.get("title") or "Запись")[:40]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{icon} {title}",
+                    callback_data=f"clarify:item:{item_id}",
+                )
+            ]
+        )
+    if include_create_new:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="➕ Создать новую запись",
+                    callback_data="clarify:new:0",
+                )
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="Отмена",
+                callback_data="clarify:cancel:0",
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)

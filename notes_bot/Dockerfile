@@ -9,7 +9,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
-RUN mkdir -p /app/data /app/logs
+RUN mkdir -p /app/data /app/logs /app/obsidian_vault
 
 CMD ["python", "-m", "app.main"]
-

@@ -8,6 +8,6 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
-      - ${HOST_OBSIDIAN_VAULT_PATH:-./obsidian_vault}:/app/obsidian
+      - ${HOST_OBSIDIAN_VAULT_PATH:-./obsidian_vault}:/app/obsidian_vault
     restart: unless-stopped
     command: python -m app.main

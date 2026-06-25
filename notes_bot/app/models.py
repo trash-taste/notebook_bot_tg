@@ -18,6 +18,15 @@ DueType = Literal[
 ]
 Priority = Literal["low", "normal", "high"]
 Status = Literal["active", "done"]
+Intent = Literal[
+    "create_new_item",
+    "append_to_existing_item",
+    "update_existing_item",
+    "archive_item",
+    "query_items",
+    "clarification_needed",
+]
+IntentTargetType = Literal["task", "workout_log", "food_log", "general_note"]
 
 
 class ParsedItem(BaseModel):
@@ -80,3 +89,18 @@ class ParsedNote(BaseModel):
         if actual != expected:
             raise ValueError(f"summary counts do not match items: expected {expected}")
         return self
+
+
+class IntentResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    intent: Intent
+    target_type: IntentTargetType | None = None
+    target_item_id: int | None = None
+    target_date: str | None = None
+    action: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
+    confidence: float = Field(ge=0.0, le=1.0)
+    needs_clarification: bool = False
+    clarification_question: str | None = None
+    candidate_item_ids: list[int] = Field(default_factory=list)

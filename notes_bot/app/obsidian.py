@@ -1,145 +1,179 @@
 from __future__ import annotations
 
 import json
-import re
-from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-from app.models import ParsedItem, ParsedNote
+
+BOT_BLOCK_START = "<!-- BOT-GENERATED:START -->"
+BOT_BLOCK_END = "<!-- BOT-GENERATED:END -->"
 
 
 class ObsidianExporter:
-    def __init__(self, vault_path: Path | None) -> None:
+    def __init__(self, vault_path: Path | None, *, enabled: bool = True) -> None:
         self.vault_path = vault_path
+        self.export_enabled = enabled
 
     @property
     def enabled(self) -> bool:
-        return self.vault_path is not None
+        return self.export_enabled and self.vault_path is not None
 
-    def export_note(
+    def daily_note_path(self, date: str) -> Path | None:
+        if self.vault_path is None:
+            return None
+        return self.vault_path / "Daily" / f"{date}.md"
+
+    def rebuild_daily_note(
         self,
         *,
         user_id: int,
-        note_id: int,
-        raw_text: str,
-        parsed_note: ParsedNote,
-        created_at: datetime | None = None,
+        date: str,
+        items: list[dict[str, Any]],
     ) -> Path | None:
-        if self.vault_path is None:
+        if not self.enabled:
             return None
 
-        timestamp = _aware_utc(created_at)
-        day = timestamp.date().isoformat()
-        target_dir = self.vault_path / "Telegram" / day
-        target_dir.mkdir(parents=True, exist_ok=True)
+        path = self.daily_note_path(date)
+        if path is None:
+            return None
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-        title = _note_title(parsed_note, raw_text)
-        file_name = f"{timestamp.strftime('%H%M%S')}-{note_id}-{_slug(title)}.md"
-        target_path = target_dir / file_name
-        target_path.write_text(
-            _render_markdown(
-                user_id=user_id,
-                note_id=note_id,
-                raw_text=raw_text,
-                parsed_note=parsed_note,
-                created_at=timestamp,
-                title=title,
-            ),
-            encoding="utf-8",
-        )
-        return target_path
+        existing = path.read_text(encoding="utf-8") if path.exists() else _daily_template(date)
+        generated_block = _render_generated_block(user_id=user_id, items=items)
+        updated = _replace_generated_block(existing, date, generated_block)
+        path.write_text(updated, encoding="utf-8")
+        return path
 
 
-def _render_markdown(
-    *,
-    user_id: int,
-    note_id: int,
-    raw_text: str,
-    parsed_note: ParsedNote,
-    created_at: datetime,
-    title: str,
-) -> str:
-    lines = [
-        "---",
-        f'title: "{_yaml_escape(title)}"',
-        "source: telegram",
-        f"user_id: {user_id}",
-        f"telegram_note_id: {note_id}",
-        f'created_at: "{created_at.isoformat(timespec="seconds")}"',
-        "tags:",
-        "  - telegram",
-        "  - notes-bot",
-        "---",
-        "",
-        f"# {title}",
-        "",
-        "## Исходный текст",
-        "",
-        raw_text.strip(),
-        "",
-        "## Разбор",
-        "",
-        parsed_note.bot_reply.strip(),
-        "",
-    ]
+def _daily_template(date: str) -> str:
+    return "\n".join(
+        [
+            f"# {date}",
+            "",
+            "## 📝 Ручные мысли",
+            "",
+            "",
+            BOT_BLOCK_START,
+            BOT_BLOCK_END,
+            "",
+        ]
+    )
 
+
+def _replace_generated_block(existing: str, date: str, generated_block: str) -> str:
+    if BOT_BLOCK_START in existing and BOT_BLOCK_END in existing:
+        before, rest = existing.split(BOT_BLOCK_START, 1)
+        _, after = rest.split(BOT_BLOCK_END, 1)
+        return f"{before}{generated_block}{after}"
+
+    base = existing.rstrip()
+    if not base:
+        base = _daily_template(date).rstrip()
+        before, rest = base.split(BOT_BLOCK_START, 1)
+        _, after = rest.split(BOT_BLOCK_END, 1)
+        return f"{before}{generated_block}{after}\n"
+    return f"{base}\n\n{generated_block}\n"
+
+
+def _render_generated_block(*, user_id: int, items: list[dict[str, Any]]) -> str:
     groups = [
-        ("task", "Задачи"),
-        ("general_note", "Заметки"),
-        ("workout_log", "Тренировки"),
-        ("food_log", "Питание"),
+        ("task", "✅ Задачи"),
+        ("food_log", "🍽 Питание"),
+        ("workout_log", "🏋️ Тренировка"),
+        ("general_note", "🧠 Заметки"),
     ]
+    lines = [BOT_BLOCK_START, f"<!-- user:{user_id} -->", ""]
     for item_type, heading in groups:
-        items = [item for item in parsed_note.items if item.type == item_type]
-        if not items:
-            continue
-        lines.extend([f"## {heading}", ""])
-        for item in items:
-            lines.extend(_item_lines(item))
-        lines.append("")
+        lines.extend([heading, ""])
+        typed_items = [item for item in items if item.get("type") == item_type]
+        if typed_items:
+            for item in typed_items:
+                lines.extend(_render_item_block(item))
+                lines.append("")
+        else:
+            lines.append("_Нет записей._")
+            lines.append("")
+    lines.append(BOT_BLOCK_END)
+    return "\n".join(lines)
 
-    return "\n".join(lines).rstrip() + "\n"
+
+def _render_item_block(item: dict[str, Any]) -> list[str]:
+    block_id = item.get("obsidian_block_id") or _block_id(item.get("type"), item.get("id"))
+    return [
+        f"<!-- item:{block_id} -->",
+        *_item_lines(item),
+        f"<!-- /item:{block_id} -->",
+    ]
 
 
-def _item_lines(item: ParsedItem) -> list[str]:
-    prefix = "- [ ]" if item.type == "task" and item.status != "done" else "-"
-    if item.type == "task" and item.status == "done":
-        prefix = "- [x]"
+def _item_lines(item: dict[str, Any]) -> list[str]:
+    item_type = item.get("type")
+    data = _json_object(item.get("data_json"))
+    if item_type == "task":
+        checkbox = "- [x]" if item.get("status") == "done" else "- [ ]"
+        due = f" 📅 {item['due_date']}" if item.get("due_date") else ""
+        return [f"{checkbox} {item.get('title', 'Задача')}{due}"]
+    if item_type == "workout_log":
+        lines = _data_list(data, "exercises")
+        return lines or [f"- {item.get('title', 'Тренировка')}"]
+    if item_type == "food_log":
+        lines = _data_list(data, "items")
+        return lines or [f"- {item.get('title', 'Питание')}"]
+    return [f"- {item.get('title', 'Заметка')}"]
 
-    lines = [f"{prefix} {item.title}"]
-    details = []
-    if item.due_type:
-        details.append(f"срок: {item.due_type}")
-    if item.due_date:
-        details.append(f"дата: {item.due_date.isoformat()}")
-    if item.priority:
-        details.append(f"приоритет: {item.priority}")
-    if details:
-        lines.append(f"  - {'; '.join(details)}")
-    if item.data:
-        lines.append(f"  - данные: `{json.dumps(item.data, ensure_ascii=False)}`")
+
+def _data_list(data: dict[str, Any], key: str) -> list[str]:
+    value = data.get(key)
+    if not isinstance(value, list):
+        return []
+    lines = []
+    for entry in value:
+        if isinstance(entry, str):
+            lines.append(f"- {entry}")
+        elif isinstance(entry, dict):
+            lines.append(f"- {_format_data_entry(entry)}")
     return lines
 
 
-def _note_title(parsed_note: ParsedNote, raw_text: str) -> str:
-    if parsed_note.items:
-        return parsed_note.items[0].title[:80]
-    normalized = " ".join(raw_text.split())
-    return (normalized or "Telegram заметка")[:80]
+def _format_data_entry(entry: dict[str, Any]) -> str:
+    name = entry.get("name") or entry.get("exercise") or entry.get("title") or "Запись"
+    details = []
+    for key, label in [
+        ("amount", ""),
+        ("weight_kg", "кг"),
+        ("reps", "повт."),
+        ("sets_count", "подх."),
+    ]:
+        value = entry.get(key)
+        if value is not None:
+            details.append(f"{value} {label}".strip())
+    if details:
+        return f"{name}: {', '.join(details)}"
+    compact = {
+        key: value
+        for key, value in entry.items()
+        if key not in {"name", "exercise", "title"} and value is not None
+    }
+    if compact:
+        return f"{name} — {json.dumps(compact, ensure_ascii=False)}"
+    return str(name)
 
 
-def _slug(value: str) -> str:
-    normalized = re.sub(r"[^\wа-яА-ЯёЁ-]+", "-", value.lower(), flags=re.UNICODE)
-    normalized = re.sub(r"-+", "-", normalized).strip("-")
-    return normalized[:60] or "note"
+def _json_object(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
-def _yaml_escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _aware_utc(value: datetime | None) -> datetime:
-    current = value or datetime.now(timezone.utc)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=timezone.utc)
-    return current.astimezone(timezone.utc)
+def _block_id(item_type: str | None, item_id: object) -> str:
+    short = {
+        "task": "task",
+        "workout_log": "workout",
+        "food_log": "food",
+        "general_note": "note",
+    }.get(str(item_type), "item")
+    return f"{short}-{item_id}"

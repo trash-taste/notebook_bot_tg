@@ -84,6 +84,13 @@ class TaskManagementTests(unittest.TestCase):
         self.assertEqual(self.database.get_active_tasks(10), [])
         self.assertFalse(self.database.delete_task(999, self.task_id))
         self.assertTrue(self.database.delete_task(10, self.task_id))
+        self.assertIsNone(self.database.get_task(10, self.task_id))
+
+        events = self.database.get_item_events(10, self.task_id)
+        self.assertEqual(
+            [event["event_type"] for event in events],
+            ["created", "updated", "updated", "updated", "archived"],
+        )
 
     def test_task_keyboards_contain_expected_actions(self) -> None:
         task = self.database.get_task(10, self.task_id)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import json
 
 
 def build_system_prompt(now: datetime, timezone_name: str) -> str:
@@ -77,3 +78,79 @@ def build_system_prompt(now: datetime, timezone_name: str) -> str:
 bot_reply должен кратко перечислить, что записано. Не ставь медицинские диагнозы.
 """.strip()
 
+
+def build_intent_prompt(
+    *,
+    user_text: str,
+    current_date: str,
+    timezone_name: str,
+    context: dict,
+) -> str:
+    context_json = json.dumps(context, ensure_ascii=False, indent=2)
+    return f"""
+Ты не создаёшь финальные заметки. Ты только определяешь намерение пользователя для Telegram-бота личных заметок.
+
+Верни только один валидный JSON-объект без Markdown и пояснений.
+
+Текущая дата: {current_date}
+Часовой пояс: {timezone_name}
+
+Поддерживаемые intent:
+- create_new_item — создать новую запись
+- append_to_existing_item — добавить данные в существующую запись
+- update_existing_item — изменить существующую запись
+- archive_item — архивировать/удалить логически
+- query_items — показать существующие записи
+- clarification_needed — нужно уточнение
+
+target_type:
+- task
+- workout_log
+- food_log
+- general_note
+- null
+
+Правила:
+- Если пользователь говорит “туда”, “это”, “к этому”, используй recent context.
+- Если контекст неоднозначный, не угадывай.
+- Если подходит несколько target items, верни clarification_needed.
+- Если пользователь явно говорит “в тренировку”, target_type = workout_log.
+- Если пользователь явно говорит “в питание”, target_type = food_log.
+- Если пользователь явно говорит “в задачу”, target_type = task.
+- Если preferred_type_from_keywords задан и есть подходящий item за сегодня, можно выбрать его.
+- Если текст про еду и есть food_log за сегодня, выбери food_log даже если последняя запись была другого типа.
+- Если текст про тренировку и есть workout_log за сегодня, выбери workout_log.
+- Для “удали последнюю запись” используй последнюю активную запись.
+- Для вопросов “что я ел сегодня?” или “что по тренировке?” используй query_items.
+- confidence ниже 0.75 означает, что лучше спросить уточнение.
+
+Структура JSON:
+{{
+  "intent": "create_new_item | append_to_existing_item | update_existing_item | archive_item | query_items | clarification_needed",
+  "target_type": "task | workout_log | food_log | general_note | null",
+  "target_item_id": 123 или null,
+  "target_date": "YYYY-MM-DD или null",
+  "action": "короткое действие или null",
+  "data": {{}},
+  "confidence": 0.0,
+  "needs_clarification": false,
+  "clarification_question": "вопрос или null",
+  "candidate_item_ids": []
+}}
+
+Примеры action:
+- append_food
+- append_exercise
+- update_due_date
+- update_title
+- archive_last
+- query_food_today
+- query_workout_today
+- query_tasks
+
+Контекст из SQLite:
+{context_json}
+
+Текст пользователя:
+{user_text}
+""".strip()

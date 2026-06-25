@@ -79,8 +79,12 @@ OPENROUTER_API_KEY=openrouter-key
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 OPENROUTER_MODEL=openai/gpt-4o-mini
 DB_PATH=/app/data/notes.db
+TIMEZONE=Asia/Almaty
 USER_TIMEZONE=Asia/Almaty
 LOG_LEVEL=INFO
+OBSIDIAN_VAULT_PATH=/app/obsidian_vault
+ENABLE_OBSIDIAN_EXPORT=true
+HOST_OBSIDIAN_VAULT_PATH=./obsidian_vault
 ```
 
 Значения `TELEGRAM_BOT_TOKEN` и `OPENROUTER_API_KEY` не должны оставаться пустыми.
@@ -88,19 +92,34 @@ LOG_LEVEL=INFO
 
 Для локального запуска без Docker замени `DB_PATH` на `./data/notes.db`.
 
-### Экспорт в Obsidian
+### Экспорт в Obsidian Daily Notes
 
-По умолчанию экспорт выключен. Чтобы бот дополнительно сохранял каждую запись как Markdown-файл для Obsidian, добавь в `.env`:
+Бот использует SQLite как основную базу, а Obsidian — только как Markdown-отображение.
+Чтобы включить экспорт, добавь в `.env`:
 
 ```env
-OBSIDIAN_VAULT_PATH=/app/obsidian
-HOST_OBSIDIAN_VAULT_PATH=/opt/obsidian_vault
+OBSIDIAN_VAULT_PATH=/app/obsidian_vault
+ENABLE_OBSIDIAN_EXPORT=true
+HOST_OBSIDIAN_VAULT_PATH=./obsidian_vault
 ```
 
 `OBSIDIAN_VAULT_PATH` — путь внутри контейнера.
 `HOST_OBSIDIAN_VAULT_PATH` — папка на VPS, где будут лежать Markdown-файлы.
 
-После запуска Obsidian можно открыть эту папку как vault или синхронизировать её с твоим основным vault через Git/Syncthing/Obsidian Sync.
+Daily notes создаются в:
+
+```text
+obsidian_vault/Daily/YYYY-MM-DD.md
+```
+
+Бот обновляет только блок между:
+
+```text
+<!-- BOT-GENERATED:START -->
+<!-- BOT-GENERATED:END -->
+```
+
+Ручной текст вне этого блока не трогается.
 
 ## 3. Запуск через Docker Compose
 
@@ -129,6 +148,33 @@ docker compose ps
 - `🗑 Удалить` — удалить задачу после подтверждения.
 
 Команда `/cancel` отменяет режим изменения названия.
+
+## Контекстное понимание
+
+Перед обработкой обычного текста бот смотрит короткий контекст из SQLite:
+
+- последние записи;
+- сегодняшние записи;
+- активные задачи;
+- последнюю тренировку;
+- последнее питание;
+- последнюю заметку.
+
+Примеры:
+
+- `Добавь туда 2 яйца` — если сегодня есть питание, бот сам добавит в питание;
+- `Магний не завтра, а сегодня` — изменит срок задачи;
+- `Удали последнюю запись` — архивирует последнюю активную запись без физического удаления;
+- `Что я ел сегодня?` — покажет питание за сегодня.
+
+Если цель неоднозначна, бот спросит уточнение кнопками.
+
+## Дополнительные команды
+
+- `/context` — показать контекст, который видит бот;
+- `/export_today` — отправить Markdown-файл Daily note за сегодня;
+- `/rebuild_today` — пересобрать Daily note из SQLite;
+- `/health` — проверить работу бота и SQLite.
 
 ## 4. Просмотр логов
 

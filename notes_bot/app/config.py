@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,8 +20,12 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "openai/gpt-4o-mini"
     db_path: Path = Path("/app/data/notes.db")
-    obsidian_vault_path: Path | None = None
-    user_timezone: str = "Asia/Almaty"
+    obsidian_vault_path: Path | None = Path("/app/obsidian_vault")
+    enable_obsidian_export: bool = True
+    user_timezone: str = Field(
+        default="Asia/Almaty",
+        validation_alias=AliasChoices("USER_TIMEZONE", "TIMEZONE"),
+    )
     log_level: str = "INFO"
 
     @field_validator("telegram_bot_token", "openrouter_api_key")

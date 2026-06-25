@@ -50,6 +50,8 @@ async def main() -> int:
     database = Database(settings.db_path)
     database.initialize()
     parser = OpenRouterParser(settings)
+    if not settings.enable_obsidian_export or settings.obsidian_vault_path is None:
+        LOGGER.warning("Obsidian export is disabled or OBSIDIAN_VAULT_PATH is empty")
 
     bot = Bot(
         token=settings.telegram_bot_token,
