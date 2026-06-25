@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -45,6 +45,39 @@ def parsed_note() -> ParsedNote:
                 "general_notes_count": 0,
             },
             "bot_reply": "Записал задачу.",
+        }
+    )
+
+
+def food_note() -> ParsedNote:
+    return ParsedNote.model_validate(
+        {
+            "raw_text": "яичница",
+            "detected_language": "ru",
+            "items": [
+                {
+                    "type": "food_log",
+                    "category": "food",
+                    "title": "яичница",
+                    "date": "2026-06-20",
+                    "due_type": None,
+                    "due_date": None,
+                    "priority": None,
+                    "status": "active",
+                    "data": {"items": [{"name": "яичница", "amount": None}]},
+                    "raw_fragment": "яичница",
+                    "missing_fields": [],
+                    "confidence": 0.95,
+                    "needs_clarification": False,
+                }
+            ],
+            "summary": {
+                "tasks_count": 0,
+                "workout_count": 0,
+                "food_count": 1,
+                "general_notes_count": 0,
+            },
+            "bot_reply": "Записал питание.",
         }
     )
 
@@ -124,6 +157,34 @@ class TaskManagementTests(unittest.TestCase):
         self.assertIsNotNone(due_date_for_type("tomorrow", "Asia/Almaty"))
         self.assertIsNone(due_date_for_type("this_week", "Asia/Almaty"))
         self.assertIsNone(due_date_for_type("no_deadline", "Asia/Almaty"))
+
+    def test_food_updated_today_is_visible_in_today_food(self) -> None:
+        self.database.save_note(
+            10,
+            "яичница",
+            food_note(),
+            created_at=datetime(2026, 6, 24, tzinfo=timezone.utc),
+        )
+        food_id = self.database.get_last_item_by_type(10, "food_log")["id"]
+
+        self.assertTrue(
+            self.database.append_item_data(
+                10,
+                food_id,
+                {"items": [{"name": "яйца", "amount": "2 шт"}]},
+                raw_text="Ты забыл про яичницу утром",
+            )
+        )
+
+        now = datetime.now(timezone.utc)
+        rows = self.database.get_items_for_day(
+            10,
+            "food_log",
+            "2099-01-01",
+            (now - timedelta(minutes=5)).isoformat(timespec="seconds"),
+            (now + timedelta(minutes=5)).isoformat(timespec="seconds"),
+        )
+        self.assertTrue(any(row["id"] == food_id for row in rows))
 
 
 if __name__ == "__main__":

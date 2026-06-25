@@ -213,11 +213,12 @@ class Database:
               AND (
                     date = ?
                     OR (date IS NULL AND created_at >= ? AND created_at < ?)
+                    OR (updated_at >= ? AND updated_at < ?)
               )
-            ORDER BY created_at DESC
+            ORDER BY COALESCE(updated_at, created_at) DESC
             LIMIT ?
             """,
-            (user_id, item_type, local_date, start_utc, end_utc, limit),
+            (user_id, item_type, local_date, start_utc, end_utc, start_utc, end_utc, limit),
         )
 
     def get_active_tasks(
@@ -378,11 +379,12 @@ class Database:
                     date = ?
                     OR due_date = ?
                     OR (date IS NULL AND created_at >= ? AND created_at < ?)
+                    OR (updated_at >= ? AND updated_at < ?)
               )
-            ORDER BY type, created_at DESC
+            ORDER BY type, COALESCE(updated_at, created_at) DESC
             LIMIT ?
             """,
-            (user_id, local_date, local_date, start_utc, end_utc, limit),
+            (user_id, local_date, local_date, start_utc, end_utc, start_utc, end_utc, limit),
         )
 
     def get_last_item_by_type(

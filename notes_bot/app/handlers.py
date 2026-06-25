@@ -287,6 +287,7 @@ async def process_user_text(
             candidate_item_ids=[],
         )
 
+    intent = _prevent_accidental_append(intent, text)
     intent = _resolve_obvious_target(intent, context)
 
     if _should_ask_clarification(intent):
@@ -521,22 +522,25 @@ async def answer_query(
 ) -> None:
     target = intent.target_type or context.preferred_type
     action = intent.action or ""
+    target_date = intent.target_date or context.current_date
     if target == "food_log" or "food" in action:
-        await show_items_for_today(
+        await show_items_for_date(
             message,
             database,
             settings,
             item_type="food_log",
-            heading="Питание за сегодня",
+            heading=_dated_heading("Питание", target_date, context.current_date),
+            local_date=target_date,
         )
         return
     if target == "workout_log" or "workout" in action:
-        await show_items_for_today(
+        await show_items_for_date(
             message,
             database,
             settings,
             item_type="workout_log",
-            heading="Тренировки за сегодня",
+            heading=_dated_heading("Тренировки", target_date, context.current_date),
+            local_date=target_date,
         )
         return
     if target == "task" or "task" in action:
@@ -877,11 +881,31 @@ async def show_items_for_today(
     item_type: str,
     heading: str,
 ) -> None:
+    local_date, _, _ = local_day_bounds(settings.user_timezone)
+    await show_items_for_date(
+        message,
+        database,
+        settings,
+        item_type=item_type,
+        heading=heading,
+        local_date=local_date,
+    )
+
+
+async def show_items_for_date(
+    message: Message,
+    database: Database,
+    settings: Settings,
+    *,
+    item_type: str,
+    heading: str,
+    local_date: str,
+) -> None:
     user_id = _user_id(message)
     if user_id is None:
         return
 
-    local_date, start_utc, end_utc = local_day_bounds(settings.user_timezone)
+    _, start_utc, end_utc = day_bounds_for_date(local_date, settings.user_timezone)
     items = await asyncio.to_thread(
         database.get_items_for_day,
         user_id,
@@ -1017,8 +1041,6 @@ async def export_today(
 
 
 def _resolve_obvious_target(intent: IntentResult, context: BotContext) -> IntentResult:
-    if intent.target_item_id is not None:
-        return intent
     if intent.intent not in {"append_to_existing_item", "update_existing_item"}:
         return intent
 
@@ -1027,6 +1049,47 @@ def _resolve_obvious_target(intent: IntentResult, context: BotContext) -> Intent
         return intent
 
     today_matches = [item for item in context.today_items if item.get("type") == preferred]
+    if intent.target_item_id is not None:
+        target = _item_by_id(
+            intent.target_item_id,
+            [
+                *context.today_items,
+                *context.recent_items,
+                *context.active_tasks,
+            ],
+        )
+        target_is_today = any(
+            item.get("id") == intent.target_item_id for item in context.today_items
+        )
+        target_type = target.get("type") if target else intent.target_type
+        if (
+            preferred in {"food_log", "workout_log"}
+            and target_type != preferred
+            and len(today_matches) == 1
+        ):
+            return intent.model_copy(
+                update={
+                    "target_type": preferred,
+                    "target_item_id": today_matches[0]["id"],
+                    "confidence": max(intent.confidence, 0.84),
+                    "needs_clarification": False,
+                }
+            )
+        if (
+            preferred == "food_log"
+            and not target_is_today
+            and len(today_matches) == 1
+        ):
+            return intent.model_copy(
+                update={
+                    "target_type": preferred,
+                    "target_item_id": today_matches[0]["id"],
+                    "confidence": max(intent.confidence, 0.84),
+                    "needs_clarification": False,
+                }
+            )
+        return intent
+
     if len(today_matches) == 1:
         return intent.model_copy(
             update={
@@ -1066,6 +1129,40 @@ def _resolve_obvious_target(intent: IntentResult, context: BotContext) -> Intent
     return intent
 
 
+def _prevent_accidental_append(intent: IntentResult, text: str) -> IntentResult:
+    if intent.intent != "append_to_existing_item":
+        return intent
+    if _looks_like_append_reference(text):
+        return intent
+    return intent.model_copy(
+        update={
+            "intent": "create_new_item",
+            "target_item_id": None,
+            "needs_clarification": False,
+            "candidate_item_ids": [],
+        }
+    )
+
+
+def _looks_like_append_reference(text: str) -> bool:
+    lowered = text.lower()
+    markers = [
+        "добав",
+        "туда",
+        "ещё",
+        "еще",
+        "к этому",
+        "в тренировку",
+        "в питание",
+        "в задачу",
+        "допол",
+        "плюс",
+        "забыл",
+        "забыла",
+    ]
+    return any(marker in lowered for marker in markers)
+
+
 def _should_ask_clarification(intent: IntentResult) -> bool:
     if intent.intent == "create_new_item":
         return False
@@ -1076,6 +1173,13 @@ def _should_ask_clarification(intent: IntentResult) -> bool:
     if intent.intent in {"append_to_existing_item", "update_existing_item"}:
         return intent.target_item_id is None
     return False
+
+
+def _item_by_id(item_id: int, items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for item in items:
+        if item.get("id") == item_id:
+            return item
+    return None
 
 
 async def _candidate_items(
@@ -1153,6 +1257,12 @@ def _format_due(task: dict[str, Any]) -> str:
     if due_type == "specific_date" and task.get("due_date"):
         return str(task["due_date"])
     return labels.get(due_type, "без срока")
+
+
+def _dated_heading(base: str, target_date: str, current_date: str) -> str:
+    if target_date == current_date:
+        return f"{base} за сегодня"
+    return f"{base} за {target_date}"
 
 
 def _format_data_json(data_json: str) -> str:
