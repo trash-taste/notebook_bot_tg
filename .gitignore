@@ -5,7 +5,14 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
+*.egg-info/
 data/*.jsonl
+data/*.db
+data/*.db-*
+data/_test_tmp/
 tests/_notes_test.jsonl
 tests/_tasks_test.jsonl
 notes_bot/obsidian_vault/
+obsidian_vault/
+logs/
+backups/

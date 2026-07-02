@@ -1,86 +1,125 @@
-# T Bot Notes
+# Notebook Bot TG
 
-Минимальная интеграция для проверки prompt asset парсера голосовых заметок через OpenRouter.
+Telegram-бот личных заметок: задачи, питание, тренировки, обычные заметки, OpenRouter-парсинг и Obsidian Daily Notes.
+
+## Структура
+
+```text
+apps/telegram_bot/      # aiogram bot для VPS
+packages/llm/           # CLI/OpenRouter parser и prompt
+packages/llm/prompts/   # voice_note_parser_ru.md
+data/                   # локальные данные, в Git не добавлять без явного решения
+scripts/                # ручные scripts
+tests/                  # тесты
+```
 
 ## Настройка
 
-1. Создай локальный `.env` на основе `.env.example`.
-2. Добавь ключи:
+Создай `.env` из `.env.example` и заполни секреты:
 
 ```env
-OPENROUTER_API_KEY=sk-or-v1-...
+TELEGRAM_BOT_TOKEN=
+OPENROUTER_API_KEY=
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 OPENROUTER_MODEL=openai/gpt-4o-mini
+DB_PATH=/app/data/notes.db
 USER_TIMEZONE=Asia/Almaty
-TELEGRAM_BOT_TOKEN=123456:telegram-token
+LOG_LEVEL=INFO
+OBSIDIAN_VAULT_PATH=/app/obsidian_vault
+ENABLE_OBSIDIAN_EXPORT=true
+HOST_OBSIDIAN_VAULT_PATH=./obsidian_vault
 ```
 
-3. Установи зависимости:
+Секреты не коммитить.
 
-```powershell
-python -m pip install -r requirements.txt
+## Локальный запуск
+
+```bash
+python -m pip install -e ".[dev]"
+python -m apps.telegram_bot.main
 ```
 
-## Запуск CLI
+CLI parser:
 
-```powershell
-python -m src.voice_note_parser.cli "Сегодня сделал жим 70 на 8, ел гречку, завтра купить магний"
+```bash
+parse-note "Сегодня сделал жим 70 на 8, ел гречку, завтра купить магний"
 ```
 
-CLI загружает `prompts/voice_note_parser_ru.md`, подставляет текущие даты и часовой пояс, отправляет текст в OpenRouter и печатает валидированный JSON.
+или:
 
-## Запуск Telegram-бота
-
-```powershell
-python -m src.telegram_bot.bot
+```bash
+python -m packages.llm.cli "Сегодня сделал жим 70 на 8"
 ```
 
-Бот принимает текстовые сообщения, отправляет их в parser, отвечает коротким `bot_reply` и сохраняет полный результат в `data/notes.jsonl`.
+## Docker / VPS
 
-Голосовые сообщения бот не распознает отдельным API, чтобы снизить стоимость. Для диктовки используй голосовой ввод клавиатуры телефона и отправляй уже готовый текст.
+На VPS папка остаётся простой:
 
-## Главное меню
+```bash
+cd /opt/notebook_bot_tg
+git pull
+docker compose up -d --build
+docker compose logs --tail=80 notes-bot
+```
 
-Команда `/start` или `/menu` показывает меню:
+Docker service:
 
 ```text
-Что показать?
-
-[📅 Сегодня] [✅ Задачи]
-[🏋️ Тренировки] [🍽 Питание]
-[📈 Прогресс] [📝 Все заметки]
+notes-bot
 ```
 
-Меню не вызывает дополнительные дорогие STT-запросы: оно работает по уже сохраненным `notes.jsonl` и `tasks.jsonl`.
+Команда контейнера:
 
-## Активные задачи
+```bash
+python -m apps.telegram_bot.main
+```
 
-После парсинга заметок бот сохраняет найденные задачи в `data/tasks.jsonl`.
+## Команды бота
 
-Команда:
+- `/start`
+- `/today`
+- `/tasks`
+- `/food`
+- `/workout`
+- `/last`
+- `/undo`
+- `/context`
+- `/export_today`
+- `/rebuild_today`
+- `/health`
+
+## Obsidian
+
+SQLite остаётся основной базой, Obsidian — Markdown-отображение.
+
+Daily notes:
 
 ```text
-/tasks
+obsidian_vault/Daily/YYYY-MM-DD.md
 ```
 
-показывает активные задачи с inline-кнопками:
+Бот обновляет только блок:
 
-- `✅ Выполнено` - закрыть задачу.
-- `📆 Перенести` - выбрать быстрый срок: сегодня, завтра, эта неделя, без срока.
-- `✏️ Изменить` - отправить новое название задачи следующим сообщением.
+```text
+<!-- BOT-GENERATED:START -->
+<!-- BOT-GENERATED:END -->
+```
 
-## Конфигурация
+Ручной текст вне блока не трогается.
 
-- `OPENROUTER_API_KEY` - обязательный ключ OpenRouter.
-- `OPENROUTER_MODEL` - модель OpenRouter, по умолчанию `openai/gpt-4o-mini`.
-- `USER_TIMEZONE` - часовой пояс пользователя, по умолчанию `Asia/Almaty`.
-- `TELEGRAM_BOT_TOKEN` - обязательный токен Telegram-бота для запуска `src.telegram_bot.bot`.
-- `OPENROUTER_HTTP_REFERER` - необязательный URL для OpenRouter rankings.
-- `OPENROUTER_APP_TITLE` - необязательное название приложения для OpenRouter rankings.
+## Backup
 
-Реальный `.env` игнорируется Git и не должен попадать в репозиторий.
+`scripts/backup.sh` намеренно защищён от случайного коммита личных данных:
 
-## Локальные проверки
+```bash
+ALLOW_DATA_GIT_BACKUP=1 scripts/backup.sh
+```
 
-```powershell
-python -m unittest discover -s tests
+Используй только если remote приватный и ты понимаешь, что `data/` может содержать личные заметки.
+
+## Проверки
+
+```bash
+pytest
+python -m compileall -q apps packages tests
 ```
