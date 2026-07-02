@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from apps.telegram_bot.models import ParsedNote
+from packages.storage.db import create_schema, create_sqlite_engine, session_factory, session_scope
+from packages.storage.repositories.capture_items import CaptureItemRepository
+from packages.storage.repositories.notes import NoteRepository
+from packages.storage.repositories.tasks import TaskRepository
 
 
 SCHEMA = """
@@ -72,13 +76,51 @@ ON item_events(item_id, created_at DESC);
 class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
+        self.engine = create_sqlite_engine(path)
+        self.session_factory = session_factory(self.engine)
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        create_schema(self.engine)
         with closing(self._connect()) as connection:
             with connection:
                 connection.executescript(SCHEMA)
                 self._migrate(connection)
+
+    def create_capture(
+        self,
+        *,
+        user_id: int | None,
+        chat_id: int | None,
+        message_id: int | None,
+        raw_text: str,
+        source: str = "text",
+    ) -> int:
+        with session_scope(self.session_factory) as session:
+            capture = CaptureItemRepository(session).create(
+                raw_text=raw_text,
+                user_id=user_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                source=source,
+            )
+            return capture.id
+
+    def mark_capture_status(
+        self,
+        capture_id: int | None,
+        status: str,
+        *,
+        parser_error: str | None = None,
+    ) -> None:
+        if capture_id is None:
+            return
+        with session_scope(self.session_factory) as session:
+            CaptureItemRepository(session).update_status(
+                capture_id,
+                status=status,
+                parser_error=parser_error,
+            )
 
     def save_note(
         self,
@@ -87,6 +129,7 @@ class Database:
         parsed_note: ParsedNote,
         *,
         created_at: datetime | None = None,
+        capture_item_id: int | None = None,
     ) -> int:
         timestamp = _utc_iso(created_at)
         parsed_dict = parsed_note.model_dump(mode="json")
@@ -165,7 +208,51 @@ class Database:
                         raw_text=raw_text,
                         created_at=timestamp,
                     )
+        self._save_storage_items(
+            user_id=user_id,
+            capture_item_id=capture_item_id,
+            parsed_note=parsed_note,
+            timestamp=timestamp,
+        )
+        if capture_item_id is not None:
+            self.mark_capture_status(capture_item_id, "parsed")
         return note_id
+
+    def _save_storage_items(
+        self,
+        *,
+        user_id: int,
+        capture_item_id: int | None,
+        parsed_note: ParsedNote,
+        timestamp: str,
+    ) -> None:
+        created_at_utc = _parse_iso(timestamp)
+        with session_scope(self.session_factory) as session:
+            note_repo = NoteRepository(session)
+            task_repo = TaskRepository(session)
+            for item in parsed_note.items:
+                parsed_json = item.model_dump(mode="json")
+                note_repo.create(
+                    capture_item_id=capture_item_id,
+                    user_id=user_id,
+                    type=item.type,
+                    category=item.category,
+                    title=item.title,
+                    body=item.raw_fragment,
+                    parsed_json=parsed_json,
+                    created_at_utc=created_at_utc,
+                )
+                if item.type == "task":
+                    task_repo.create(
+                        capture_item_id=capture_item_id,
+                        user_id=user_id,
+                        title=item.title,
+                        status=item.status or "active",
+                        due_at_utc=_date_to_utc(item.due_date.isoformat() if item.due_date else None),
+                        due_type=item.due_type,
+                        priority=item.priority,
+                        created_at_utc=created_at_utc,
+                    )
 
     def get_notes_between(
         self,
@@ -745,6 +832,22 @@ def _utc_iso(value: datetime | None) -> str:
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     return current.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def _parse_iso(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _date_to_utc(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _block_id(item_type: str, item_id: int) -> str:

@@ -260,6 +260,14 @@ async def process_user_text(
     user_id = _user_id(message)
     if user_id is None:
         return
+    capture_id = await asyncio.to_thread(
+        database.create_capture,
+        user_id=user_id,
+        chat_id=_chat_id(message),
+        message_id=getattr(message, "message_id", None),
+        raw_text=text,
+        source="text",
+    )
 
     context = await asyncio.to_thread(
         collect_context,
@@ -291,7 +299,21 @@ async def process_user_text(
     intent = _resolve_obvious_target(intent, context)
 
     if _should_ask_clarification(intent):
-        await ask_clarification(message, state, database, user_id, text, intent, context)
+        await ask_clarification(
+            message,
+            state,
+            database,
+            user_id,
+            text,
+            intent,
+            context,
+            capture_item_id=capture_id,
+        )
+        await asyncio.to_thread(
+            database.mark_capture_status,
+            capture_id,
+            "awaiting_clarification",
+        )
         return
 
     if intent.intent == "create_new_item":
@@ -303,6 +325,7 @@ async def process_user_text(
             obsidian_exporter,
             text,
             context.current_date,
+            capture_item_id=capture_id,
         )
         return
 
@@ -315,6 +338,7 @@ async def process_user_text(
             text,
             intent,
             context,
+            capture_item_id=capture_id,
         )
         return
 
@@ -327,6 +351,7 @@ async def process_user_text(
             text,
             intent,
             context,
+            capture_item_id=capture_id,
         )
         return
 
@@ -339,14 +364,30 @@ async def process_user_text(
             text,
             intent,
             context,
+            capture_item_id=capture_id,
         )
         return
 
     if intent.intent == "query_items":
         await answer_query(message, database, settings, intent, context)
+        await asyncio.to_thread(database.mark_capture_status, capture_id, "handled")
         return
 
-    await ask_clarification(message, state, database, user_id, text, intent, context)
+    await ask_clarification(
+        message,
+        state,
+        database,
+        user_id,
+        text,
+        intent,
+        context,
+        capture_item_id=capture_id,
+    )
+    await asyncio.to_thread(
+        database.mark_capture_status,
+        capture_id,
+        "awaiting_clarification",
+    )
 
 
 async def create_new_item(
@@ -359,6 +400,7 @@ async def create_new_item(
     current_date: str,
     *,
     user_id_override: int | None = None,
+    capture_item_id: int | None = None,
 ) -> None:
     user_id = user_id_override or _user_id(message)
     if user_id is None:
@@ -370,12 +412,19 @@ async def create_new_item(
             user_id,
             text,
             parsed_note,
+            capture_item_id=capture_item_id,
         )
         note_items = await asyncio.to_thread(database.get_items_for_note, user_id, note_id)
         dates = _dates_for_items(note_items, fallback=current_date)
         await rebuild_daily_notes(database, settings, obsidian_exporter, user_id, dates)
     except LLMParserError:
         LOGGER.exception("LLM parsing failed for user_id=%s", user_id)
+        await asyncio.to_thread(
+            database.mark_capture_status,
+            capture_item_id,
+            "parse_failed",
+            parser_error="LLM parsing failed",
+        )
         await message.answer("Не получилось разобрать заметку. Попробуй ещё раз позже.")
         return
     except OSError:
@@ -384,6 +433,12 @@ async def create_new_item(
         return
     except Exception:
         LOGGER.exception("Saving note failed for user_id=%s", user_id)
+        await asyncio.to_thread(
+            database.mark_capture_status,
+            capture_item_id,
+            "parse_failed",
+            parser_error="Saving note failed",
+        )
         await message.answer("Не получилось сохранить заметку.")
         return
 
@@ -400,6 +455,7 @@ async def append_to_existing_item(
     context: BotContext,
     *,
     user_id_override: int | None = None,
+    capture_item_id: int | None = None,
 ) -> None:
     user_id = user_id_override or _user_id(message)
     if user_id is None or intent.target_item_id is None:
@@ -423,6 +479,7 @@ async def append_to_existing_item(
 
     dates = _dates_for_items([item], fallback=context.current_date)
     await rebuild_daily_notes(database, settings, obsidian_exporter, user_id, dates)
+    await asyncio.to_thread(database.mark_capture_status, capture_item_id, "handled")
     await message.answer(f"Добавил к записи: {html.escape(item['title'])}")
 
 
@@ -434,6 +491,8 @@ async def update_existing_item(
     text: str,
     intent: IntentResult,
     context: BotContext,
+    *,
+    capture_item_id: int | None = None,
 ) -> None:
     user_id = _user_id(message)
     if user_id is None or intent.target_item_id is None:
@@ -464,6 +523,7 @@ async def update_existing_item(
 
     dates = _dates_for_items([item, {**item, **fields}], fallback=context.current_date)
     await rebuild_daily_notes(database, settings, obsidian_exporter, user_id, dates)
+    await asyncio.to_thread(database.mark_capture_status, capture_item_id, "handled")
     await message.answer(f"Обновил запись: {html.escape(item['title'])}")
 
 
@@ -475,6 +535,8 @@ async def archive_existing_item(
     text: str,
     intent: IntentResult,
     context: BotContext,
+    *,
+    capture_item_id: int | None = None,
 ) -> None:
     user_id = _user_id(message)
     if user_id is None:
@@ -492,6 +554,7 @@ async def archive_existing_item(
             user_id,
             [context.current_date],
         )
+        await asyncio.to_thread(database.mark_capture_status, capture_item_id, "handled")
         await message.answer(
             f"Архивировал последнюю запись: {html.escape(shorten(archived['raw_text'], 150))}"
         )
@@ -510,6 +573,7 @@ async def archive_existing_item(
 
     dates = _dates_for_items([item] if item else [], fallback=context.current_date)
     await rebuild_daily_notes(database, settings, obsidian_exporter, user_id, dates)
+    await asyncio.to_thread(database.mark_capture_status, capture_item_id, "handled")
     await message.answer("Запись архивирована.")
 
 
@@ -557,12 +621,15 @@ async def ask_clarification(
     text: str,
     intent: IntentResult,
     context: BotContext,
+    *,
+    capture_item_id: int | None = None,
 ) -> None:
     candidates = await _candidate_items(database, user_id, intent, context)
     await state.set_state(Clarification.waiting_for_target)
     await state.update_data(
         pending_text=text,
         pending_intent=intent.model_dump(mode="json"),
+        pending_capture_id=capture_item_id,
     )
     question = intent.clarification_question or "Куда добавить это?"
     await message.answer(
@@ -588,6 +655,7 @@ async def handle_clarification_callback(
     state_data = await state.get_data()
     text = state_data.get("pending_text")
     intent_data = state_data.get("pending_intent")
+    capture_id = state_data.get("pending_capture_id")
     if not isinstance(text, str) or not isinstance(intent_data, dict):
         await state.clear()
         await query.answer("Контекст устарел.", show_alert=True)
@@ -617,6 +685,7 @@ async def handle_clarification_callback(
             text,
             _today(settings.user_timezone),
             user_id_override=query.from_user.id,
+            capture_item_id=capture_id if isinstance(capture_id, int) else None,
         )
         return
 
@@ -665,6 +734,7 @@ async def handle_clarification_callback(
         intent,
         context,
         user_id_override=query.from_user.id,
+        capture_item_id=capture_id if isinstance(capture_id, int) else None,
     )
 
 
@@ -1243,6 +1313,11 @@ def _user_id(message: Message) -> int | None:
     if message.from_user is None:
         return None
     return message.from_user.id
+
+
+def _chat_id(message: Message) -> int | None:
+    chat = getattr(message, "chat", None)
+    return getattr(chat, "id", None)
 
 
 def _format_due(task: dict[str, Any]) -> str:

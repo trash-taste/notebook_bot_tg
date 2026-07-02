@@ -8,6 +8,9 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY apps ./apps
 COPY packages ./packages
+COPY scripts ./scripts
+COPY migrations ./migrations
+COPY alembic.ini ./
 RUN pip install --no-cache-dir .
 
 RUN mkdir -p /app/data /app/logs /app/obsidian_vault
